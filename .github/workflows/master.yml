@@ -64,7 +64,6 @@ jobs:
       - name: Pick least-loaded server workflow
         id: pick-server
         run: |
-          echo "Fetching active projects..."
           RESPONSE=$(curl -sL \
             -H "x-internal-secret: $WEBHOOK_SECRET" \
             "$VERCEL_APP_URL/api/projects" || echo '{"projects":[]}')
@@ -88,7 +87,7 @@ jobs:
             [ "${SERVER_COUNT[$i]}" -lt "$MIN" ] && MIN="${SERVER_COUNT[$i]}" && CHOSEN=$i
           done
 
-          echo "Chosen server: $CHOSEN (current load: ${SERVER_COUNT[$CHOSEN]})"
+          echo "Chosen server: $CHOSEN (load: ${SERVER_COUNT[$CHOSEN]})"
           echo "server_number=$CHOSEN" >> "$GITHUB_OUTPUT"
 
       - name: Trigger server workflow
@@ -104,36 +103,43 @@ jobs:
         run: |
           echo "Triggering server-${SERVER_NUM}.yml for project ${PROJECT_ID}..."
 
-          # Build JSON payload via Python to avoid shell escaping issues
-          PAYLOAD=$(python3 - <<PYEOF
-          import json, os
-          print(json.dumps({
-            "ref": "main",
-            "inputs": {
-              "project_id":     os.environ["PROJECT_ID"],
-              "repo_url":       os.environ["REPO_URL"],
-              "pat":            os.environ["PAT"],
-              "env_b64":        os.environ.get("ENV_B64", ""),
-              "run_command":    os.environ.get("RUN_CMD", "pnpm dev"),
-              "port":           os.environ.get("PORT", "3000"),
-              "webhook_url":    os.environ["VERCEL_APP_URL"] + "/api/webhook/update-link",
-              "webhook_secret": os.environ["WEBHOOK_SECRET"],
-              "cf_workers_key": os.environ.get("CF_KEY", ""),
-            }
-          }))
-          PYEOF
-          )
+          # Use jq to safely build JSON — handles all special characters correctly
+          jq -n \
+            --arg ref       "main" \
+            --arg pid       "$PROJECT_ID" \
+            --arg repo_url  "$REPO_URL" \
+            --arg pat       "$PAT" \
+            --arg env_b64   "$ENV_B64" \
+            --arg run_cmd   "$RUN_CMD" \
+            --arg port      "$PORT" \
+            --arg wh_url    "${VERCEL_APP_URL}/api/webhook/update-link" \
+            --arg wh_secret "$WEBHOOK_SECRET" \
+            --arg cf_key    "${CF_KEY:-}" \
+            '{
+              ref: $ref,
+              inputs: {
+                project_id:     $pid,
+                repo_url:       $repo_url,
+                pat:            $pat,
+                env_b64:        $env_b64,
+                run_command:    $run_cmd,
+                port:           $port,
+                webhook_url:    $wh_url,
+                webhook_secret: $wh_secret,
+                cf_workers_key: $cf_key
+              }
+            }' > /tmp/payload.json
 
-          echo "Payload: $PAYLOAD"
+          echo "Payload built (secrets redacted):"
+          jq 'del(.inputs.pat, .inputs.webhook_secret) | .inputs.env_b64 = "***"' /tmp/payload.json
 
-          # Note: -s not -f so we always get the response body for debugging
           HTTP_STATUS=$(curl -s -o /tmp/gh_resp.json -w "%{http_code}" -X POST \
             "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/server-${SERVER_NUM}.yml/dispatches" \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+            --data-binary @/tmp/payload.json)
 
           echo "GitHub API status: $HTTP_STATUS"
           echo "GitHub API response:"
@@ -144,7 +150,10 @@ jobs:
             curl -s -X POST "${VERCEL_APP_URL}/api/webhook/update-link" \
               -H "Content-Type: application/json" \
               -H "x-webhook-secret: $WEBHOOK_SECRET" \
-              -d "{\"project_id\":\"$PROJECT_ID\",\"status\":\"failed\",\"failure_reason\":\"Could not trigger server-${SERVER_NUM} (HTTP $HTTP_STATUS)\"}" || true
+              --data-binary "$(jq -n \
+                --arg pid "$PROJECT_ID" \
+                --arg reason "Could not trigger server-${SERVER_NUM} (HTTP $HTTP_STATUS)" \
+                '{project_id:$pid, status:"failed", failure_reason:$reason}')" || true
             exit 1
           fi
 
@@ -168,16 +177,10 @@ jobs:
           " 2>/dev/null || echo "error")
 
             echo "Poll $i/60 — status: $STATUS"
-
-            if [ "$STATUS" = "running" ]; then
-              echo "Project is running!"
-              exit 0
-            elif [ "$STATUS" = "failed" ]; then
-              echo "::error::Project failed"
-              exit 1
-            fi
+            [ "$STATUS" = "running" ] && echo "Project is running!" && exit 0
+            [ "$STATUS" = "failed"  ] && echo "::error::Project failed" && exit 1
           done
-          echo "::warning::Timed out waiting — server workflow may still be starting"
+          echo "::warning::Timed out — server workflow may still be starting"
 
   # ── Cron maintenance ────────────────────────────────────────────────────────
   cron-maintenance:
@@ -225,7 +228,6 @@ jobs:
               cur_wf     = proj.get("activeWorkflow")
               cur_run_id = proj.get("activeWorkflowRunId")
 
-              # Fetch full project data (includes PAT + envVars)
               r = subprocess.run(
                   ["curl", "-sL", "-H", f"x-internal-secret: {SECRET}",
                    f"{VERCEL}/api/projects/{pid}/internal"],
@@ -269,6 +271,9 @@ jobs:
                   }
               })
 
+              with open("/tmp/cron_payload.json", "w") as f:
+                  f.write(payload)
+
               r2 = subprocess.run(
                   ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST",
                    f"https://api.github.com/repos/{OWNER}/{REPO}/actions/workflows/server-{new_wf}.yml/dispatches",
@@ -276,7 +281,7 @@ jobs:
                    "-H", "Accept: application/vnd.github+json",
                    "-H", "X-GitHub-Api-Version: 2022-11-28",
                    "-H", "Content-Type: application/json",
-                   "-d", payload],
+                   "--data-binary", "@/tmp/cron_payload.json"],
                   capture_output=True, text=True)
               print(f"  Triggered server-{new_wf}: HTTP {r2.stdout.strip()}")
 
@@ -323,4 +328,4 @@ jobs:
         run: |
           echo "## Cron Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- Ran at: $(date -u)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Projects processed: ${{ steps.fetch.outputs.count }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Projects: ${{ steps.fetch.outputs.count }}" >> "$GITHUB_STEP_SUMMARY"
