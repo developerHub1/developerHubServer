@@ -18,8 +18,9 @@ on:
         required: true
         type: string
       pat:
-        description: "GitHub PAT"
-        required: true
+        description: "GitHub PAT (empty for public repos)"
+        required: false
+        default: ""
         type: string
       env_b64:
         description: "Base64-encoded .env content"
@@ -240,8 +241,9 @@ jobs:
 
               pat      = full.get("pat", "")
               repo_url = full.get("repoUrl", "")
-              if not pat or not repo_url:
-                  print(f"  {pid}: missing PAT or repoUrl, skipping")
+              # PAT may be empty for public repos — only repo_url is required.
+              if not repo_url:
+                  print(f"  {pid}: missing repoUrl, skipping")
                   continue
 
               run_cmd  = full.get("runCommand", "pnpm dev")
