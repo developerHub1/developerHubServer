@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - deploy_new
+          - run_maintenance
       project_id:
         description: "MongoDB project ID"
         required: true
@@ -44,7 +45,7 @@ on:
         type: string
 
   schedule:
-    - cron: "0 */3 * * *"
+    - cron: "0 * * * *"
 
 env:
   VERCEL_APP_URL: ${{ secrets.VERCEL_APP_URL }}
@@ -196,7 +197,7 @@ jobs:
 
   # ── Cron maintenance ────────────────────────────────────────────────────────
   cron-maintenance:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.action == 'run_maintenance')
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
