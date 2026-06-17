@@ -1,8 +1,6 @@
 name: "Cron Maintenance"
 
 on:
-  schedule:
-    - cron: "0 * * * *"
   workflow_dispatch: {}
 
 env:
@@ -127,11 +125,10 @@ jobs:
                   print(f"  Failed — keeping old workflow", flush=True)
                   continue
 
-              # Poll every 30s for up to 10 minutes for new workflow to become active
               print(f"  Polling for server-{new_wf} to become active (max 10 min)...", flush=True)
               confirmed = False
               new_status, new_active = "unknown", None
-              for attempt in range(1, 21):      # 20 × 30s = 10 minutes
+              for attempt in range(1, 21):
                   time.sleep(30)
                   r3 = subprocess.run(
                       ["curl", "-sL", "-H", f"x-internal-secret: {SECRET}", f"{VERCEL}/api/projects"],
