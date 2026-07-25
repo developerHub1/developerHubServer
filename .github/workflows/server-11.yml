@@ -234,9 +234,18 @@ jobs:
               exit 1
             fi
 
+            for port in "${PORT_ARR[@]}"; do
+              [ -z "$port" ] && continue
+
+              if python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(1); r=s.connect_ex(("127.0.0.1", int(sys.argv[1]))); s.close(); sys.exit(0 if r == 0 else 1)' "$port"; then
+                echo "Detected app listening on port $port"
+                APP_READY=true
+                break 2
+              fi
+            done
+
             if [ "$i" -eq 60 ]; then
-              echo "App process has been running for 5 minutes; proceeding without waiting for port health checks"
-              APP_READY=true
+              echo "App process is still running after 5 minutes, but no configured port became ready"
               break
             fi
 
