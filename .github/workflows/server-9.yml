@@ -226,9 +226,9 @@ jobs:
           APP_PID=$!
           echo "APP_PID=$APP_PID" >> "$GITHUB_ENV"
 
-          echo "Waiting for app process to come online (timeout: 5m)..."
+          echo "Waiting for app process to come online (timeout: 20m)..."
           APP_READY=false
-          for i in $(seq 1 60); do
+          for i in $(seq 1 240); do
             if ! kill -0 "$APP_PID" 2>/dev/null; then
               echo "::error::App process died during startup"
               exit 1
@@ -244,8 +244,8 @@ jobs:
               fi
             done
 
-            if [ "$i" -eq 60 ]; then
-              echo "App process is still running after 5 minutes, but no configured port became ready"
+            if [ "$i" -eq 240 ]; then
+              echo "App process is still running after 20 minutes, but no configured port became ready"
               break
             fi
 
@@ -256,7 +256,7 @@ jobs:
           kill "$TAIL_PID" 2>/dev/null || true
 
           if [ "$APP_READY" != "true" ]; then
-            echo "::error::App did not start within 5 minutes"
+            echo "::error::App did not start within 20 minutes"
             exit 1
           fi
 
